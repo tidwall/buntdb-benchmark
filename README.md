@@ -36,13 +36,13 @@ Usage of buntdb-benchmark:
         Only run the comma separated list of tests
 ```
 
-To run every test execute this: 
+To run every test: 
 
 ```
 buntdb-benchmark
 ```
 
-This will run all tests and output details that look like:
+The output details that look like:
 
 ```
 ====== GET ======
@@ -60,6 +60,8 @@ This will run all tests and output details that look like:
   heap usage: 101864 bytes
 
 249158.03 operations per second
+
+...
 ```
 
 The `-q` option will only output the `operations per second` lines.
