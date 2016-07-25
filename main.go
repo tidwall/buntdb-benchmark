@@ -13,15 +13,16 @@ import (
 	"github.com/tidwall/buntdb"
 )
 
-var N = 100000    // Number of requests
-var C = 10        // Number of clients
-var T = "SET,GET" // Tests to run
-var S = 1000      // Number of item in the random set
-var CSV = false   // Output in CSV format
-var P = 1         // Number or requests per transaction
-var Mem bool      // Use only memory, no disk persistence
-var I0 bool       // for ever loop
-var Keys, Vals []string
+var N = 100000  // Number of requests
+var R = 10      // Number of routines
+var T = ""      // Tests to run
+var S = 1000    // Number of item in the random set
+var CSV = false // Output in CSV format
+var Q = false   // Quiet. Just show query/sec values
+var P = 1       // Number or requests per transaction
+var Mem bool    // Use only memory, no disk persistence
+var Forever = 1 // number of times to re-run the tests
+var Keys, Vals, ValsLL []string
 var Path = "data.db"
 
 func main() {
@@ -30,16 +31,17 @@ func main() {
 			os.RemoveAll(Path)
 		}
 	}()
-	flag.IntVar(&N, "n", N, "Total number of requests")
-	flag.IntVar(&C, "c", C, "Number of parallel goroutines")
+	flag.IntVar(&N, "n", N, "Number of operations per test")
+	flag.IntVar(&R, "r", R, "Number of parallel goroutines")
 	flag.StringVar(&T, "t", T, "Only run the comma separated list of tests")
 	flag.IntVar(&S, "s", S, "Number of items in the random set")
 	flag.BoolVar(&CSV, "csv", CSV, "Output in CSV format")
 	flag.IntVar(&P, "P", P, "Number requests per transaction")
+	flag.BoolVar(&Q, "q", Q, "Quiet. Just show query/sec values")
 	flag.BoolVar(&Mem, "mem", Mem, "Use only memory, no disk persistence")
-	flag.BoolVar(&I0, "I0", I0, "Forever loop")
+	flag.IntVar(&Forever, "N", Forever, "Number of times to re-run the tests. -1 = forever")
 	flag.Parse()
-	if N < 1 || C < 1 || S < 1 || P < 1 {
+	if N < 1 || R < 1 || S < 1 || P < 1 || S > 10000000 {
 		fmt.Printf("invalid arguments")
 		os.Exit(1)
 	}
@@ -48,11 +50,18 @@ func main() {
 	}
 	rand.Seed(time.Now().UnixNano())
 	for _, i := range rand.Perm(S) {
-		Keys = append(Keys, fmt.Sprintf("key:%d", i))
-		Vals = append(Vals, fmt.Sprintf("val:%d", i))
+		Keys = append(Keys, fmt.Sprintf("key:%010d", i))
+		Vals = append(Vals, fmt.Sprintf("%010d", i))
+		ValsLL = append(ValsLL, fmt.Sprintf("[%f %f]", rand.Float64()*360-180, rand.Float64()*180-90))
 	}
 
-	for {
+	if Forever < 0 {
+		Forever = 0xFFFFFFF
+	}
+	if T == "" {
+		T = "GET,SET,ASCEND,DESCEND,SPATIAL"
+	}
+	for i := 0; i < Forever; i++ {
 		for _, test := range strings.Split(T, ",") {
 			test = strings.TrimSpace(test)
 			switch strings.ToLower(test) {
@@ -60,12 +69,50 @@ func main() {
 				SET()
 			case "get":
 				GET()
-			case "test":
-				TEST()
+			case "ascend":
+				for i := 100; i <= 800; i *= 2 {
+					ASCEND(i)
+				}
+			case "ascend_100":
+				ASCEND(100)
+			case "ascend_200":
+				ASCEND(200)
+			case "ascend_400":
+				ASCEND(400)
+			case "ascend_800":
+				ASCEND(800)
+			case "descend":
+				for i := 100; i <= 800; i *= 2 {
+					DESCEND(i)
+				}
+			case "descend_100":
+				DESCEND(100)
+			case "descend_200":
+				DESCEND(200)
+			case "descend_400":
+				DESCEND(400)
+			case "descend_800":
+				DESCEND(800)
+			case "spatial":
+				SPATIAL_SET() // GEO
+				for i := 100; i <= 800; i *= 2 {
+					SPATIAL_INTERSECTS(i)
+				}
+			case "spatial_set":
+				SPATIAL_SET() // GEO
+			case "spatial_intersects":
+				for i := 100; i <= 800; i *= 2 {
+					SPATIAL_INTERSECTS(i)
+				}
+			case "spatial_intersects_100":
+				SPATIAL_INTERSECTS(100)
+			case "spatial_intersects_200":
+				SPATIAL_INTERSECTS(200)
+			case "spatial_intersects_400":
+				SPATIAL_INTERSECTS(400)
+			case "spatial_intersects_800":
+				SPATIAL_INTERSECTS(800)
 			}
-		}
-		if !I0 {
-			break
 		}
 	}
 }
@@ -74,21 +121,22 @@ func fatal(what interface{}) {
 	panic(fmt.Sprintf("%v", what))
 }
 
-func bench(name string, count int, clients int, fn func(n int) error) {
-	defer fmt.Printf("\n")
-
+func bench(name string, count int, routines int, fn func(n int) error) {
+	if !CSV && !Q {
+		defer fmt.Printf("\n")
+	}
 	var stats1 runtime.MemStats
 	var stats2 runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&stats1)
-
-	fmt.Printf("%s: ", name)
 	var sl, el int
-	sl = len(name) + 2
+	if !CSV && !Q {
+		fmt.Printf("%s: ", name)
+		sl = len(name) + 2
+	}
 	erase := func(n int) {
 		fmt.Printf("%s%s%s", strings.Repeat("\b", n), strings.Repeat(" ", n), strings.Repeat("\b", n))
 	}
-
 	var start time.Time
 	var mu sync.Mutex
 	var procd int
@@ -108,21 +156,23 @@ func bench(name string, count int, clients int, fn func(n int) error) {
 			}
 			mu.Lock()
 			procd += nn
-			if procd%10000 == 0 {
-				dd := fmt.Sprintf("%.2f", float64(procd)/(float64(time.Now().Sub(start))/float64(time.Second)))
-				erase(el)
-				el = len(dd)
-				fmt.Printf("%s", dd)
+			if !CSV && !Q {
+				if procd%10000 == 0 {
+					dd := fmt.Sprintf("%.2f", float64(procd)/(float64(time.Now().Sub(start))/float64(time.Second)))
+					erase(el)
+					el = len(dd)
+					fmt.Printf("%s", dd)
+				}
 			}
 			mu.Unlock()
 			i += nn
 		}
 	}
 
-	var uclients int // the actual number of clients used, this is not printed
+	var uclients int // the actual number of routines used, this is not printed
 	remain := count
 	start = time.Now()
-	for rpc := count / clients; remain > 0; {
+	for rpc := count / routines; remain > 0; {
 		n := rpc
 		if remain < rpc {
 			n = remain
@@ -143,19 +193,29 @@ func bench(name string, count int, clients int, fn func(n int) error) {
 	if stats2.HeapAlloc > stats1.HeapAlloc {
 		heap = stats2.HeapAlloc - stats1.HeapAlloc
 	}
-	erase(sl + el)
-
-	fmt.Printf("====== %s ======\n", name)
-	fmt.Printf("  %d request completed in %.2f seconds\n", count, float64(total)/float64(time.Second))
-	fmt.Printf("  %d item random data set\n", S)
-	plural := "s"
-	if clients == 1 {
-		plural = ""
+	switch {
+	default:
+		erase(sl + el)
+		fmt.Printf("====== %s ======\n", name)
+		plural := "s"
+		if count == 1 {
+			plural = ""
+		}
+		fmt.Printf("  %d operation%s completed in %.2f seconds\n", count, plural, float64(total)/float64(time.Second))
+		fmt.Printf("  %d item random data set\n", S)
+		plural = "s"
+		if routines == 1 {
+			plural = ""
+		}
+		fmt.Printf("  %d parallel goroutine%s\n", routines, plural)
+		fmt.Printf("  heap usage: %d bytes\n", heap)
+		fmt.Printf("\n")
+		fmt.Printf("%.2f operations per second\n", float64(procd)/(float64(total)/float64(time.Second)))
+	case CSV:
+		fmt.Printf("\"%s\",\"%.2f\"\n", strings.Split(name, " ")[0], float64(procd)/(float64(total)/float64(time.Second)))
+	case Q:
+		fmt.Printf("%s: %.2f operations per second\n", strings.Split(name, " ")[0], float64(procd)/(float64(total)/float64(time.Second)))
 	}
-	fmt.Printf("  %d parallel client%s\n", clients, plural)
-	fmt.Printf("  %d bytes in heap\n", heap)
-	fmt.Printf("\n")
-	fmt.Printf("%.2f requests per second\n", float64(procd)/(float64(total)/float64(time.Second)))
 }
 
 func SET() {
@@ -165,7 +225,7 @@ func SET() {
 		fatal(err)
 	}
 	defer db.Close()
-	bench("SET", N, C, func(n int) error {
+	bench("SET", N, R, func(n int) error {
 		return db.Update(func(tx *buntdb.Tx) error {
 			for i := 0; i < n; i++ {
 				idx := rand.Int() % len(Keys)
@@ -179,25 +239,45 @@ func SET() {
 	})
 }
 
-func GET() {
+func dbFill(spatial bool) (*buntdb.DB, error) {
 	os.RemoveAll(Path)
 	db, err := buntdb.Open(Path)
 	if err != nil {
-		fatal(err)
+		return nil, err
 	}
-	defer db.Close()
+	if spatial {
+		err = db.CreateSpatialIndex("spatial", "*", buntdb.IndexRect)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := db.Update(func(tx *buntdb.Tx) error {
 		for i := 0; i < len(Keys); i++ {
-			_, _, err := tx.Set(Keys[i], Vals[i], nil)
+			var err error
+			if !spatial {
+				_, _, err = tx.Set(Keys[i], Vals[i], nil)
+			} else {
+				_, _, err = tx.Set(Keys[i], ValsLL[i], nil)
+			}
 			if err != nil {
 				return err
 			}
 		}
 		return nil
 	}); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func GET() {
+	db, err := dbFill(false)
+	if err != nil {
 		fatal(err)
 	}
-	bench("GET", N, C, func(n int) error {
+	defer db.Close()
+	bench("GET", N, R, func(n int) error {
 		return db.View(func(tx *buntdb.Tx) error {
 			for i := 0; i < n; i++ {
 				idx := rand.Int() % len(Keys)
@@ -213,10 +293,138 @@ func GET() {
 		})
 	})
 }
-func TEST() {
-	bench("TEST", N, C, func(n int) error {
-		abcd := make([]byte, S)
-		abcd = abcd
+
+func ASCEND(n int) {
+	db, err := dbFill(false)
+	if err != nil {
+		fatal(err)
+	}
+	defer db.Close()
+	keys := make([]string, 0)
+	for i := 0; i < n; i++ {
+		keys = append(keys, fmt.Sprintf("key:%010d", i))
+	}
+	max := n
+	bench(fmt.Sprintf("ASCEND_%d (first %d items)", n, n), N, R, func(n int) error {
+		return db.View(func(tx *buntdb.Tx) error {
+			for i := 0; i < n; i++ {
+				idx := 0
+				var ferr error
+				err := tx.Ascend("", func(key, val string) bool {
+					if idx == max {
+						return false
+					}
+					if key != keys[idx] {
+						ferr = fmt.Errorf("keys mismatch '%v' != '%v'", key, keys[idx])
+						return false
+					}
+					idx++
+					return true
+				})
+				if err != nil {
+					return err
+				}
+				if ferr != nil {
+					return ferr
+				}
+			}
+			return nil
+		})
+	})
+}
+
+func DESCEND(n int) {
+	db, err := dbFill(false)
+	if err != nil {
+		fatal(err)
+	}
+	defer db.Close()
+	var l int
+	err = db.View(func(tx *buntdb.Tx) error {
+		var err error
+		l, err = tx.Len()
+		return err
+	})
+	if err != nil {
+		fatal(err)
+	}
+	keys := make([]string, 0)
+	for i := 0; i < n; i++ {
+		keys = append(keys, fmt.Sprintf("key:%010d", l-i-1))
+	}
+	max := n
+	bench(fmt.Sprintf("DESCEND_%d (last %d items)", n, n), N, R, func(n int) error {
+		return db.View(func(tx *buntdb.Tx) error {
+			for i := 0; i < n; i++ {
+				idx := 0
+				var ferr error
+				err := tx.Descend("", func(key, val string) bool {
+					if idx == max {
+						return false
+					}
+					if key != keys[idx] {
+						ferr = fmt.Errorf("keys mismatch '%v' != '%v'", key, keys[idx])
+						return false
+					}
+					idx++
+					return true
+				})
+				if err != nil {
+					return err
+				}
+				if ferr != nil {
+					return ferr
+				}
+			}
+			return nil
+		})
+	})
+}
+func SPATIAL_INTERSECTS(n int) {
+	db, err := dbFill(true)
+	if err != nil {
+		fatal(err)
+	}
+	defer db.Close()
+	nn := n
+	bench(fmt.Sprintf("SPATIAL_INTERSECTS_%d (first %d points)", n, n), N, R, func(n int) error {
+		count := 0
+		err := db.View(func(tx *buntdb.Tx) error {
+			return tx.Intersects("spatial", "[-180 -90],[180 90]", func(key, val string) bool {
+				if count == nn {
+					return false
+				}
+				count++
+				return true
+			})
+		})
+		if err != nil {
+			return err
+		}
 		return nil
+	})
+}
+func SPATIAL_SET() {
+	os.RemoveAll(Path)
+	db, err := buntdb.Open(Path)
+	if err != nil {
+		fatal(err)
+	}
+	defer db.Close()
+	err = db.CreateSpatialIndex("spatial", "*", buntdb.IndexRect)
+	if err != nil {
+		fatal(err)
+	}
+	bench(fmt.Sprintf("SPATIAL_SET"), N, R, func(n int) error {
+		return db.Update(func(tx *buntdb.Tx) error {
+			for i := 0; i < n; i++ {
+				idx := rand.Int() % len(Keys)
+				_, _, err := tx.Set(Keys[idx], ValsLL[idx], nil)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	})
 }
