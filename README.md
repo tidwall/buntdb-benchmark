@@ -42,7 +42,7 @@ To run every test:
 buntdb-benchmark
 ```
 
-The output details that look like:
+Benchmark output:
 
 ```
 ====== GET ======
