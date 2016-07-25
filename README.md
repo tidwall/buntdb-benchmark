@@ -7,7 +7,7 @@ Install
 [Go](http://golang.com) must be installed before installing.
 
 ```sh
-go install github.com/tidwall/buntdb-benchmark
+go get github.com/tidwall/buntdb-benchmark
 ```
 
 Running
