@@ -64,7 +64,12 @@ Benchmark output:
 ...
 ```
 
+Quick and Easy Benchmarks
+-------------------------
+
 The `-q` option will only output the `operations per second` lines.
+
+*This is the results of running the benchmarks on a MacBook Pro 15" 2.8 GHz Intel Core i7:*
 
 ```
 $ buntdb-benchmark -q
