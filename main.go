@@ -31,6 +31,8 @@ func main() {
 			os.RemoveAll(Path)
 		}
 	}()
+	var cas string
+	flag.StringVar(&cas, "case", "", "Specify a unique test case")
 	flag.IntVar(&N, "n", N, "Number of operations per test")
 	flag.IntVar(&R, "r", R, "Number of parallel goroutines")
 	flag.StringVar(&T, "t", T, "Only run the comma separated list of tests")
@@ -44,6 +46,10 @@ func main() {
 	if N < 1 || R < 1 || S < 1 || P < 1 || S > 10000000 {
 		fmt.Printf("invalid arguments")
 		os.Exit(1)
+	}
+	if cas != "" {
+		executeSpecialCase(cas)
+		return
 	}
 	if Mem {
 		Path = ":memory:"
